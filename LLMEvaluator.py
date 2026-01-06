@@ -1,5 +1,5 @@
 """
-LLM Evaluator for Invoice Data Extraction
+LLM Evaluator for Invoice Data Extraction 
 
 This module evaluates extracted invoice JSON data against curated ground truth CSV
 using GroundX LLM for semantic comparison of field values.
@@ -21,6 +21,7 @@ import hashlib
 from groundx.extract.settings.settings import AgentSettings
 from groundx.extract.services.logger import Logger
 from groundx.extract.agents import AgentCode
+
 
 class Judgment(str, Enum):
     """Enumeration for field judgment results."""
@@ -108,10 +109,10 @@ class LLMEvaluator:
         >>> print(f"Accuracy: {report.accuracy_percentage}%")
     """
     
-    # System prompt for the evaluation agent
+    # System prompt for batched evaluation
     SYSTEM_PROMPT = """You are an expert evaluator for invoice data extraction accuracy.
 
-Your task is to compare EXTRACTED VALUES against GROUND TRUTH VALUES and determine if they are semantically equivalent.
+Your task is to compare multiple EXTRACTED VALUES against their GROUND TRUTH VALUES and determine if each pair is semantically equivalent.
 
 ## EVALUATION RULES
 
@@ -194,8 +195,21 @@ JUDGMENT: RIGHT
 
 ## RESPONSE FORMAT
 
-You must respond with EXACTLY one word: either "RIGHT" or "WRONG"
-Do not include any explanation, punctuation, or additional text.
+You MUST respond with a valid JSON object containing judgments for ALL fields.
+Format:
+```json
+{
+  "field_name_1": "RIGHT",
+  "field_name_2": "WRONG",
+  "field_name_3": "RIGHT"
+}
+```
+
+CRITICAL RULES:
+- Include EVERY field from the input
+- Use ONLY "RIGHT" or "WRONG" as values
+- Return valid JSON only, no explanations or additional text
+- Field names in response must EXACTLY match the input field names
 """
 
     # Field name mappings for common variations (JSON key -> CSV column)
@@ -210,7 +224,7 @@ Do not include any explanation, punctuation, or additional text.
         "customerName": "customer_name",
     }
     
-    # Fields to exclude from comparison (internal/metadata fields)
+    # Fields to exclude from comparison
     EXCLUDED_FIELDS: set = {"file_name", "statement_id", "extraction_timestamp", "source_url"}
     
     def __init__(
@@ -222,98 +236,48 @@ Do not include any explanation, punctuation, or additional text.
         enable_tracing: bool = False,
         log_level: str = "INFO"
     ):
-        """
-        Initialize the LLM evaluator with ground truth data and AgentCode.
-        
-        The AgentCode is created once here with the system prompt and reused
-        for all evaluations, making batch processing more efficient.
-        
-        Args:
-            csv_path: Path to the curated CSV file containing ground truth data
-            agent_settings: GroundX AgentSettings configuration for LLM interactions.
-                           If None, default settings will be used.
-            output_dir: Directory for saving evaluation reports
-            enable_caching: Whether to cache LLM judgments for identical value pairs
-            enable_tracing: Whether to enable OpenTelemetry tracing
-            log_level: Logging level ("DEBUG", "INFO", "WARNING", "ERROR")
-        
-        Raises:
-            FileNotFoundError: If the CSV file doesn't exist
-            ValueError: If the CSV is empty or missing required columns
-        """
+        """Initialize the LLM evaluator with ground truth data and AgentCode."""
         self.logger = Logger(__name__, log_level)
-        self.logger.info_msg(f"Initializing LLMEvaluator with CSV: {csv_path}")
+        self.logger.info_msg(f"Initializing LLMEvaluator (Batched) with CSV: {csv_path}")
         
-        # Validate and load ground truth data
         self._validate_csv_path(csv_path)
         self.ground_truth_df = self._load_ground_truth(csv_path)
         
-        # Initialize GroundX agent settings
         self.agent_settings = agent_settings or AgentSettings()
-        self.logger.debug_msg(
-            f"AgentSettings - model_id: {self.agent_settings.model_id}, "
-            f"api_base: {self.agent_settings.api_base}, "
-            f"api_base: {self.agent_settings.get_api_key()}"
-        )
-        
-        # Initialize the AgentCode once with system prompt
         self.agent = self._create_agent()
-        self.logger.info_msg("AgentCode initialized with evaluation system prompt")
         
-        # Configuration
         self.output_dir = output_dir
         self.enable_caching = enable_caching
-        self._judgment_cache: Dict[str, Judgment] = {}
+        self._document_cache: Dict[str, Dict[str, Judgment]] = {}
         
-        # Create output directory if needed
         os.makedirs(self.output_dir, exist_ok=True)
-        self.logger.debug_msg(f"Output directory: {self.output_dir}")
 
         if enable_tracing:
             self._setup_tracing()
     
     def _create_agent(self) -> AgentCode:
-        """
-        Create and configure the AgentCode instance with system prompt.
-        
-        Returns:
-            Configured AgentCode instance
-        """
-        self.logger.debug_msg("Creating AgentCode instance...")
+        """Create and configure the AgentCode instance."""
         self.agent_settings.imports = []
         agent = AgentCode(
             settings=self.agent_settings,
             log=self.logger
         )
-        
-        self.logger.debug_msg(f"AgentCode created with model: {self.agent_settings.model_id}")
         return agent
 
     def _setup_tracing(self) -> None:
-        """
-        Setup OpenTelemetry tracing for LLM calls.
-        
-        Raises:
-            ImportError: If required tracing packages are not installed
-        """
+        """Setup OpenTelemetry tracing for LLM calls."""
         try:
             from openinference.instrumentation.smolagents import SmolagentsInstrumentor
             from opentelemetry import trace
             from opentelemetry.sdk.trace import TracerProvider
-            from opentelemetry.sdk.trace.export import (
-                ConsoleSpanExporter,
-                BatchSpanProcessor,
-            )
+            from opentelemetry.sdk.trace.export import ConsoleSpanExporter, BatchSpanProcessor
             
             trace.set_tracer_provider(TracerProvider())
             tracer_provider = trace.get_tracer_provider()
-            
             span_processor = BatchSpanProcessor(ConsoleSpanExporter())
             tracer_provider.add_span_processor(span_processor)
-            
             SmolagentsInstrumentor().instrument(tracer_provider=tracer_provider)
             self.logger.info_msg("OpenTelemetry tracing initialized")
-        
         except ImportError as e:
             self.logger.error_msg(f"Failed to import tracing packages: {e}")
             raise
@@ -326,193 +290,200 @@ Do not include any explanation, punctuation, or additional text.
             raise ValueError(f"Path is not a file: {csv_path}")
     
     def _load_ground_truth(self, csv_path: str) -> pd.DataFrame:
-        """
-        Load and validate ground truth CSV data.
-        
-        Args:
-            csv_path: Path to the CSV file
-            
-        Returns:
-            DataFrame containing ground truth data
-            
-        Raises:
-            ValueError: If CSV is empty or missing statement_id column
-        """
+        """Load and validate ground truth CSV data."""
         try:
             df = pd.read_csv(csv_path)
-            
-            # Normalize all column names to lowercase
             df.columns = df.columns.str.lower()
-            
-            self.logger.debug_msg(f"Loaded ground truth CSV with {len(df)} records")
-            self.logger.debug_msg(f"CSV columns: {list(df.columns)}")
             
             if df.empty:
                 raise ValueError("CSV file is empty")
-            
             if 'statement_id' not in df.columns:
                 raise ValueError("CSV missing required 'statement_id' column")
             
-            # Ensure statement_id is string type for matching
             df['statement_id'] = df['statement_id'].astype(str)
-            
             return df
-            
         except pd.errors.EmptyDataError:
             raise ValueError(f"CSV file is empty: {csv_path}")
-        except Exception as e:
-            self.logger.error_msg(f"Failed to load CSV: {str(e)}")
-            raise
     
     def _match_json_to_csv(self, json_data: Dict[str, Any]) -> pd.Series:
-        """
-        Match JSON file to the correct CSV row using file_name/statement_id.
-        
-        Args:
-            json_data: Dictionary containing extracted JSON data
-            
-        Returns:
-            Pandas Series containing the matching ground truth row
-            
-        Raises:
-            ValueError: If no matching CSV row is found or file_name is missing
-        """
+        """Match JSON file to the correct CSV row using file_name/statement_id."""
         file_name = json_data.get('file_name', '')
-        
         if not file_name:
             raise ValueError("JSON data missing 'file_name' field")
         
-        # Extract statement_id by removing .pdf extension
         statement_id = Path(file_name).stem
-        
-        self.logger.debug_msg(f"Matching JSON: file_name='{file_name}' -> statement_id='{statement_id}'")
-        
-        # Find matching row in CSV
         matching_rows = self.ground_truth_df[
             self.ground_truth_df['statement_id'] == statement_id
         ]
         
         if len(matching_rows) == 0:
-            # Try case-insensitive match
             matching_rows = self.ground_truth_df[
                 self.ground_truth_df['statement_id'].str.lower() == statement_id.lower()
             ]
             
         if len(matching_rows) == 0:
             available_ids = self.ground_truth_df['statement_id'].head(5).tolist()
-            error_msg = (
-                f"No CSV row found for statement_id: '{statement_id}'. "
-                f"Available IDs (first 5): {available_ids}"
-            )
-            self.logger.error_msg(error_msg)
-            raise ValueError(error_msg)
-        
-        if len(matching_rows) > 1:
-            self.logger.warning_msg(
-                f"Multiple CSV rows ({len(matching_rows)}) found for "
-                f"statement_id: '{statement_id}', using first match"
-            )
+            raise ValueError(f"No CSV row found for statement_id: '{statement_id}'. Available: {available_ids}")
         
         return matching_rows.iloc[0]
     
     def _normalize_field_name(self, field_name: str) -> str:
-        """
-        Normalize a field name to match CSV column conventions.
-        
-        Args:
-            field_name: Original field name from JSON
-            
-        Returns:
-            Normalized field name
-        """
-        # Check explicit mappings first
+        """Normalize a field name to match CSV column conventions."""
         if field_name in self.FIELD_MAPPINGS:
             return self.FIELD_MAPPINGS[field_name]
-        
-        # Convert camelCase to snake_case
-        normalized = re.sub(r'(?<!^)(?=[A-Z])', '_', field_name).lower()
-        
-        return normalized
+        return re.sub(r'(?<!^)(?=[A-Z])', '_', field_name).lower()
     
     def _clean_field_value(self, value: Any) -> str:
-        """
-        Clean and normalize field values for comparison.
-        
-        Args:
-            value: Raw field value (could be string, number, NaN, None, etc.)
-            
-        Returns:
-            Cleaned string representation
-        """
-        # Handle None and NaN
+        """Clean and normalize field values for comparison."""
         if value is None or (isinstance(value, float) and pd.isna(value)):
             return ""
-        
-        # Convert to string
         cleaned = str(value).strip()
-        
-        # Normalize whitespace
         cleaned = re.sub(r'\s+', ' ', cleaned)
-        
-        # Remove common artifacts
-        cleaned = cleaned.replace('\n', ' ').replace('\r', '')
-        
-        return cleaned
+        return cleaned.replace('\n', ' ').replace('\r', '')
     
-    def _create_cache_key(self, field_name: str, extracted: str, ground_truth: str) -> str:
-        """Create a cache key for LLM judgment caching."""
-        content = f"{field_name}|{extracted}|{ground_truth}"
-        return hashlib.md5(content.encode()).hexdigest()
-    
-    def _create_user_prompt(
+    def _get_comparable_fields(
         self, 
-        field_name: str, 
-        extracted_value: str, 
-        ground_truth_value: str
+        json_data: Dict[str, Any], 
+        ground_truth: pd.Series
+    ) -> List[Tuple[str, str, str, str]]:
+        """Get list of fields that can be compared between JSON and CSV."""
+        comparable_fields = []
+        csv_columns = set(ground_truth.index) - {'statement_id'}
+        json_keys = set(json_data.keys()) - self.EXCLUDED_FIELDS
+        
+        for json_key in json_keys:
+            if json_key in csv_columns:
+                csv_col = json_key
+            else:
+                normalized_key = self._normalize_field_name(json_key)
+                if normalized_key in csv_columns:
+                    csv_col = normalized_key
+                else:
+                    continue
+            
+            extracted_value = self._clean_field_value(json_data.get(json_key, ""))
+            ground_truth_value = self._clean_field_value(ground_truth.get(csv_col, ""))
+            comparable_fields.append((json_key, csv_col, extracted_value, ground_truth_value))
+        
+        return comparable_fields
+    
+    def _create_batched_prompt(
+        self, 
+        fields_to_evaluate: List[Tuple[str, str, str]]
     ) -> str:
         """
-        Create a user prompt for field evaluation.
-        
-        The system prompt already contains rules and examples, so this
-        is a concise prompt for the specific field comparison.
+        Create a single prompt for evaluating all fields at once.
         
         Args:
-            field_name: Name of the field being evaluated
-            extracted_value: Value extracted by the pipeline
-            ground_truth_value: Ground truth value from CSV
+            fields_to_evaluate: List of (field_name, extracted_value, ground_truth_value)
             
         Returns:
-            Formatted user prompt
+            Formatted prompt for batch evaluation
         """
-        prompt = f"""Evaluate this field extraction:
+        field_entries = []
+        for field_name, extracted, ground_truth in fields_to_evaluate:
+            entry = f"""Field: {field_name}
+  EXTRACTED: "{extracted}"
+  GROUND TRUTH: "{ground_truth}" """
+            field_entries.append(entry)
+        
+        fields_block = "\n\n".join(field_entries)
+        field_names = [f[0] for f in fields_to_evaluate]
+        
+        prompt = f"""Evaluate the following {len(fields_to_evaluate)} field extractions:
 
-FIELD: {field_name}
-EXTRACTED: "{extracted_value}"
-GROUND TRUTH: "{ground_truth_value}"
+{fields_block}
 
-Respond with only "RIGHT" or "WRONG":"""
+Return a JSON object with judgments for these exact fields: {field_names}
+Each value must be "RIGHT" or "WRONG".
+
+JSON response:"""
         
         return prompt
     
-    def _call_llm_for_judgment(self, user_prompt: str) -> Judgment:
+    def _parse_batched_response(
+        self, 
+        response_text: str, 
+        expected_fields: List[str]
+    ) -> Dict[str, Judgment]:
         """
-        Call the LLM agent to get field judgment.
-        
-        Uses the pre-initialized AgentCode with the system prompt.
+        Parse the LLM's batched JSON response into field judgments.
         
         Args:
-            user_prompt: The user prompt for this specific evaluation
+            response_text: Raw LLM response
+            expected_fields: List of field names we expect in the response
             
         Returns:
-            Judgment enum (RIGHT or WRONG)
+            Dictionary mapping field names to Judgment enums
         """
+        # Try to extract JSON from response
+        json_match = re.search(r'\{[^{}]*\}', response_text, re.DOTALL)
+        if not json_match:
+            # Try to find JSON with nested braces
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        
+        if not json_match:
+            self.logger.error_msg(f"No JSON found in response: {response_text[:200]}")
+            # Return all WRONG as fallback
+            return {field: Judgment.WRONG for field in expected_fields}
+        
         try:
-            self.logger.debug_msg(f"Calling LLM with prompt: {user_prompt[:100]}...")
+            json_str = json_match.group()
+            # Clean up common issues
+            json_str = json_str.replace("'", '"')
+            parsed = json.loads(json_str)
             
-            # Run the agent with user prompt (system prompt already configured)
-            response = self.agent.run(user_prompt)
+            judgments = {}
+            for field_name in expected_fields:
+                if field_name in parsed:
+                    value = parsed[field_name].upper().strip()
+                    if value == "RIGHT":
+                        judgments[field_name] = Judgment.RIGHT
+                    else:
+                        judgments[field_name] = Judgment.WRONG
+                else:
+                    # Field missing from response - try case-insensitive match
+                    found = False
+                    for key in parsed:
+                        if key.lower() == field_name.lower():
+                            value = parsed[key].upper().strip()
+                            judgments[field_name] = Judgment.RIGHT if value == "RIGHT" else Judgment.WRONG
+                            found = True
+                            break
+                    if not found:
+                        self.logger.warning_msg(f"Field '{field_name}' missing from LLM response")
+                        judgments[field_name] = Judgment.WRONG
             
-            # Handle response
+            return judgments
+            
+        except json.JSONDecodeError as e:
+            self.logger.error_msg(f"JSON parse error: {e}, response: {response_text[:200]}")
+            return {field: Judgment.WRONG for field in expected_fields}
+    
+    def _call_llm_batched(
+        self, 
+        fields_to_evaluate: List[Tuple[str, str, str]]
+    ) -> Dict[str, Judgment]:
+        """
+        Make a single LLM call to evaluate all fields.
+        
+        Args:
+            fields_to_evaluate: List of (field_name, extracted_value, ground_truth_value)
+            
+        Returns:
+            Dictionary mapping field names to Judgment enums
+        """
+        if not fields_to_evaluate:
+            return {}
+        
+        prompt = self._create_batched_prompt(fields_to_evaluate)
+        expected_fields = [f[0] for f in fields_to_evaluate]
+        
+        self.logger.debug_msg(f"Calling LLM for batch evaluation of {len(fields_to_evaluate)} fields")
+        
+        try:
+            response = self.agent.run(prompt)
+            
             if isinstance(response, str):
                 response_text = response
             elif hasattr(response, 'text'):
@@ -522,69 +493,13 @@ Respond with only "RIGHT" or "WRONG":"""
             else:
                 response_text = str(response)
             
-            self.logger.debug_msg(f"LLM response: {response_text}")
+            self.logger.debug_msg(f"LLM response: {response_text[:500]}")
             
-            # Extract judgment
-            judgment_text = response_text.strip().upper()
+            return self._parse_batched_response(response_text, expected_fields)
             
-            if "RIGHT" in judgment_text:
-                return Judgment.RIGHT
-            elif "WRONG" in judgment_text:
-                return Judgment.WRONG
-            else:
-                self.logger.warning_msg(f"Unexpected LLM response: '{judgment_text}', defaulting to WRONG")
-                return Judgment.WRONG
-                
         except Exception as e:
-            self.logger.error_msg(f"LLM call failed: {str(e)}")
-            return Judgment.WRONG
-    
-    def _get_comparable_fields(
-        self, 
-        json_data: Dict[str, Any], 
-        ground_truth: pd.Series
-    ) -> List[Tuple[str, str, str, str]]:
-        """
-        Get list of fields that can be compared between JSON and CSV.
-        
-        Args:
-            json_data: Extracted JSON data
-            ground_truth: Ground truth row from CSV
-            
-        Returns:
-            List of tuples (json_key, csv_column, extracted_value, ground_truth_value)
-        """
-        comparable_fields = []
-        csv_columns = set(ground_truth.index) - {'statement_id'}
-        json_keys = set(json_data.keys()) - self.EXCLUDED_FIELDS
-        
-        matched_csv_columns = set()
-        
-        for json_key in json_keys:
-            # Try direct match
-            if json_key in csv_columns:
-                csv_col = json_key
-            else:
-                # Try normalized match
-                normalized_key = self._normalize_field_name(json_key)
-                if normalized_key in csv_columns:
-                    csv_col = normalized_key
-                else:
-                    self.logger.debug_msg(f"JSON key '{json_key}' has no matching CSV column")
-                    continue
-            
-            extracted_value = self._clean_field_value(json_data.get(json_key, ""))
-            ground_truth_value = self._clean_field_value(ground_truth.get(csv_col, ""))
-            
-            comparable_fields.append((json_key, csv_col, extracted_value, ground_truth_value))
-            matched_csv_columns.add(csv_col)
-        
-        # Log unmatched CSV columns at debug level
-        unmatched_csv = csv_columns - matched_csv_columns
-        if unmatched_csv:
-            self.logger.debug_msg(f"CSV columns without JSON match: {unmatched_csv}")
-        
-        return comparable_fields
+            self.logger.error_msg(f"LLM batch call failed: {str(e)}")
+            return {field: Judgment.WRONG for field in expected_fields}
     
     def _compare_fields(
         self, 
@@ -592,7 +507,7 @@ Respond with only "RIGHT" or "WRONG":"""
         ground_truth: pd.Series
     ) -> List[FieldResult]:
         """
-        Compare each relevant field between JSON and ground truth using LLM.
+        Compare all fields between JSON and ground truth using a SINGLE LLM call.
         
         Args:
             json_data: Extracted JSON data
@@ -604,101 +519,86 @@ Respond with only "RIGHT" or "WRONG":"""
         results = []
         comparable_fields = self._get_comparable_fields(json_data, ground_truth)
         
-        self.logger.debug_msg(f"Comparing {len(comparable_fields)} fields")
+        # Separate fields into those needing LLM evaluation and those that can be skipped/exact-matched
+        fields_for_llm = []  # (field_name, extracted, ground_truth)
+        exact_matches = []   # FieldResult objects
+        skipped_fields = []  # FieldResult objects
         
         for json_key, csv_col, extracted_value, ground_truth_value in comparable_fields:
             field_name = csv_col
             
-            # Skip comparison if both are empty
+            # Skip if both empty
             if not extracted_value and not ground_truth_value:
-                results.append(FieldResult(
+                skipped_fields.append(FieldResult(
                     field_name=field_name,
                     extracted_value=extracted_value,
                     ground_truth_value=ground_truth_value,
                     judgment=Judgment.SKIPPED,
-                    notes="Both values empty - skipped comparison"
+                    notes="Both values empty"
                 ))
-                self.logger.debug_msg(f"Field '{field_name}': SKIPPED (both empty)")
                 continue
             
-            # Check cache first
-            cache_key = self._create_cache_key(field_name, extracted_value, ground_truth_value)
-            if self.enable_caching and cache_key in self._judgment_cache:
-                judgment = self._judgment_cache[cache_key]
-                notes = "Cached judgment"
-                self.logger.debug_msg(f"Field '{field_name}': {judgment.value} (cached)")
-            else:
-                # Quick check for exact match (skip LLM call)
-                if extracted_value.lower() == ground_truth_value.lower():
-                    judgment = Judgment.RIGHT
-                    notes = "Exact match (case-insensitive)"
-                    self.logger.debug_msg(f"Field '{field_name}': RIGHT (exact match)")
-                else:
-                    # Create user prompt and get judgment from LLM
-                    user_prompt = self._create_user_prompt(field_name, extracted_value, ground_truth_value)
-                    judgment = self._call_llm_for_judgment(user_prompt)
-                    notes = "LLM semantic comparison"
-                    self.logger.debug_msg(f"Field '{field_name}': {judgment.value} (LLM)")
-                
-                # Cache the result
-                if self.enable_caching:
-                    self._judgment_cache[cache_key] = judgment
+            # Quick exact match check (case-insensitive)
+            if extracted_value.lower() == ground_truth_value.lower():
+                exact_matches.append(FieldResult(
+                    field_name=field_name,
+                    extracted_value=extracted_value,
+                    ground_truth_value=ground_truth_value,
+                    judgment=Judgment.RIGHT,
+                    notes="Exact match (case-insensitive)"
+                ))
+                continue
             
-            result = FieldResult(
+            # Needs LLM evaluation
+            fields_for_llm.append((field_name, extracted_value, ground_truth_value))
+        
+        self.logger.debug_msg(
+            f"Field breakdown: {len(exact_matches)} exact matches, "
+            f"{len(skipped_fields)} skipped, {len(fields_for_llm)} need LLM"
+        )
+        
+        # Make single LLM call for all fields needing evaluation
+        llm_judgments = {}
+        if fields_for_llm:
+            llm_judgments = self._call_llm_batched(fields_for_llm)
+        
+        # Build results for LLM-evaluated fields
+        llm_results = []
+        for field_name, extracted_value, ground_truth_value in fields_for_llm:
+            judgment = llm_judgments.get(field_name, Judgment.WRONG)
+            llm_results.append(FieldResult(
                 field_name=field_name,
                 extracted_value=extracted_value,
                 ground_truth_value=ground_truth_value,
                 judgment=judgment,
-                notes=notes
-            )
-            results.append(result)
+                notes="LLM semantic comparison (batched)"
+            ))
             
-            # Log mismatches at INFO level for visibility
             if judgment == Judgment.WRONG:
                 self.logger.info_msg(
                     f"MISMATCH: {field_name} - "
                     f"extracted='{extracted_value}' vs ground_truth='{ground_truth_value}'"
                 )
         
+        # Combine all results
+        results = exact_matches + llm_results + skipped_fields
         return results
     
     def _load_json_data(self, json_path: str) -> Dict[str, Any]:
-        """
-        Load JSON data from local path or URL.
-        
-        Args:
-            json_path: Local file path or URL to JSON file
-            
-        Returns:
-            Dictionary containing JSON data
-            
-        Raises:
-            ValueError: If JSON is invalid or cannot be loaded
-            FileNotFoundError: If local file doesn't exist
-        """
+        """Load JSON data from local path or URL."""
         if json_path.startswith(('http://', 'https://')):
             import requests
             try:
-                self.logger.debug_msg(f"Fetching JSON from URL: {json_path}")
                 response = requests.get(json_path, timeout=30)
                 response.raise_for_status()
-                json_data = response.json()
-                self.logger.debug_msg(f"Loaded JSON from URL: {json_path}")
-            except requests.exceptions.Timeout:
-                raise ValueError(f"Timeout fetching URL: {json_path}")
-            except requests.exceptions.RequestException as e:
+                return response.json()
+            except Exception as e:
                 raise ValueError(f"Failed to fetch URL: {json_path} - {str(e)}")
         else:
             if not os.path.exists(json_path):
                 raise FileNotFoundError(f"JSON file not found: {json_path}")
-            try:
-                with open(json_path, 'r', encoding='utf-8') as f:
-                    json_data = json.load(f)
-                self.logger.debug_msg(f"Loaded JSON from file: {json_path}")
-            except json.JSONDecodeError as e:
-                raise ValueError(f"Invalid JSON in file: {json_path} - {str(e)}")
-        
-        return json_data
+            with open(json_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
     
     def evaluate(
         self, 
@@ -706,7 +606,7 @@ Respond with only "RIGHT" or "WRONG":"""
         save_report: bool = True
     ) -> EvaluationReport:
         """
-        Evaluate a single JSON file against ground truth.
+        Evaluate a single JSON file against ground truth using ONE LLM call.
         
         Args:
             json_path: Path (local or URL) to the extracted JSON file
@@ -714,35 +614,26 @@ Respond with only "RIGHT" or "WRONG":"""
             
         Returns:
             EvaluationReport object containing all evaluation details
-            
-        Raises:
-            FileNotFoundError: If JSON file doesn't exist
-            ValueError: If JSON cannot be matched to CSV or is invalid
         """
         start_time = datetime.now()
         self.logger.info_msg(f"Starting evaluation for: {json_path}")
         
-        # Load JSON data
         json_data = self._load_json_data(json_path)
-        
-        # Match JSON to CSV row
         ground_truth_row = self._match_json_to_csv(json_data)
         statement_id = Path(json_data.get('file_name', '')).stem
         
-        # Compare all fields
+        # Single LLM call happens inside _compare_fields
         field_results = self._compare_fields(json_data, ground_truth_row)
         
-        # Calculate summary statistics
+        # Calculate statistics
         total_fields = len(field_results)
         fields_right = sum(1 for r in field_results if r.judgment == Judgment.RIGHT)
         fields_wrong = sum(1 for r in field_results if r.judgment == Judgment.WRONG)
         fields_skipped = sum(1 for r in field_results if r.judgment == Judgment.SKIPPED)
         
-        # Calculate accuracy (excluding skipped fields)
         evaluated_fields = fields_right + fields_wrong
         accuracy = (fields_right / evaluated_fields * 100) if evaluated_fields > 0 else 100.0
         
-        # Create report
         report = EvaluationReport(
             evaluation_id=f"eval_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{statement_id[:8]}",
             json_file=json_path,
@@ -756,29 +647,22 @@ Respond with only "RIGHT" or "WRONG":"""
             accuracy_percentage=round(accuracy, 2),
             field_results=field_results,
             metadata={
-                "ground_truth_csv_columns": list(self.ground_truth_df.columns),
-                "extracted_json_keys": list(json_data.keys()),
+                "evaluation_mode": "batched_single_call",
                 "fields_with_mismatches": [
                     r.field_name for r in field_results if r.judgment == Judgment.WRONG
                 ]
             }
         )
         
-        # Log summary
         self.logger.info_msg(
             f"Evaluation completed: {fields_right}/{evaluated_fields} fields correct "
-            f"({accuracy:.2f}%) | Skipped: {fields_skipped} | Statement ID: {statement_id}"
+            f"({accuracy:.2f}%) | Statement ID: {statement_id}"
         )
         
-        # Save report if requested
         if save_report:
-            output_file = os.path.join(
-                self.output_dir, 
-                f"evaluation_report_{statement_id}.json"
-            )
+            output_file = os.path.join(self.output_dir, f"evaluation_report_{statement_id}.json")
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
-            self.logger.debug_msg(f"Report saved to: {output_file}")
         
         return report
     
@@ -787,19 +671,7 @@ Respond with only "RIGHT" or "WRONG":"""
         json_paths: List[str],
         continue_on_error: bool = True
     ) -> Dict[str, Any]:
-        """
-        Evaluate multiple JSON files using the same agent instance.
-        
-        This is more efficient than creating separate evaluators because
-        the AgentCode is reused across all evaluations.
-        
-        Args:
-            json_paths: List of paths to JSON files
-            continue_on_error: Whether to continue if individual evaluations fail
-            
-        Returns:
-            Aggregated batch evaluation report
-        """
+        """Evaluate multiple JSON files (each uses a single LLM call)."""
         self.logger.info_msg(f"Starting batch evaluation of {len(json_paths)} files")
         
         batch_results = []
@@ -816,64 +688,48 @@ Respond with only "RIGHT" or "WRONG":"""
                 batch_results.append(report.to_dict())
                 successful += 1
                 document_accuracies.append(report.accuracy_percentage)
-                
             except Exception as e:
                 self.logger.error_msg(f"Failed to evaluate {json_path}: {str(e)}")
                 failed += 1
                 failed_files.append({"file": json_path, "error": str(e)})
-                
                 if not continue_on_error:
                     raise
         
-        # Calculate overall statistics
         overall_accuracy = (
             sum(document_accuracies) / len(document_accuracies) 
             if document_accuracies else 0.0
         )
         
-        # Create batch report
         batch_report = {
             "batch_evaluation_id": f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
             "evaluation_timestamp": datetime.now().isoformat(),
+            "evaluation_mode": "batched_single_call_per_document",
             "summary": {
                 "total_documents": len(json_paths),
                 "successful_evaluations": successful,
                 "failed_evaluations": failed,
                 "overall_accuracy_percentage": round(overall_accuracy, 2),
-                "min_accuracy": min(document_accuracies) if document_accuracies else None,
-                "max_accuracy": max(document_accuracies) if document_accuracies else None,
-                "document_accuracies": document_accuracies
+                "total_llm_calls": successful,  # One call per document!
             },
             "failed_files": failed_files,
             "individual_reports": batch_results,
-            "output_directory": self.output_dir
         }
         
-        # Save batch report
         batch_report_file = os.path.join(self.output_dir, "batch_evaluation_summary.json")
         with open(batch_report_file, 'w', encoding='utf-8') as f:
             json.dump(batch_report, f, indent=2, ensure_ascii=False)
         
         self.logger.info_msg(
             f"Batch evaluation completed: {successful}/{len(json_paths)} successful | "
-            f"Overall accuracy: {overall_accuracy:.2f}%"
+            f"Overall accuracy: {overall_accuracy:.2f}% | Total LLM calls: {successful}"
         )
         
         return batch_report
     
     def clear_cache(self) -> None:
-        """Clear the LLM judgment cache."""
-        cache_size = len(self._judgment_cache)
-        self._judgment_cache.clear()
-        self.logger.debug_msg(f"Cleared {cache_size} cached judgments")
+        """Clear the document cache."""
+        self._document_cache.clear()
     
     def reset_agent(self) -> None:
-        """
-        Reset the agent instance.
-        
-        Useful if you need to refresh the agent state between batches.
-        """
-        self.logger.debug_msg("Resetting AgentCode instance...")
+        """Reset the agent instance."""
         self.agent = self._create_agent()
-        self.logger.debug_msg("AgentCode reset complete")
-

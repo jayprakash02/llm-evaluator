@@ -1,9 +1,9 @@
 {
-  "evaluation_id": "eval_20260106_203819_1F00DF16",
+  "evaluation_id": "eval_20260106_211243_1F00DF16",
   "json_file": "data/214f42ca-2349-4919-a11e-540b65f4ab85-extract.json",
   "statement_id": "1F00DF167936DE188831DE79A77EF792",
-  "evaluation_timestamp": "2026-01-06T20:38:19.512791",
-  "processing_time_seconds": 0.003,
+  "evaluation_timestamp": "2026-01-06T21:12:43.843374",
+  "processing_time_seconds": 0.001,
   "summary": {
     "total_fields_evaluated": 5,
     "fields_right": 5,
@@ -12,17 +12,17 @@
     "accuracy_percentage": 100.0
   },
   "field_details": {
-    "statement_date": {
-      "field_name": "statement_date",
-      "extracted_value": "2025-04-17",
-      "ground_truth_value": "2025-04-17",
-      "judgment": "RIGHT",
-      "notes": "Exact match (case-insensitive)"
-    },
     "interval_end_date": {
       "field_name": "interval_end_date",
       "extracted_value": "2025-03-11",
       "ground_truth_value": "2025-03-11",
+      "judgment": "RIGHT",
+      "notes": "Exact match (case-insensitive)"
+    },
+    "statement_date": {
+      "field_name": "statement_date",
+      "extracted_value": "2025-04-17",
+      "ground_truth_value": "2025-04-17",
       "judgment": "RIGHT",
       "notes": "Exact match (case-insensitive)"
     },
@@ -33,48 +33,23 @@
       "judgment": "RIGHT",
       "notes": "Exact match (case-insensitive)"
     },
-    "due_date": {
-      "field_name": "due_date",
-      "extracted_value": "2025-04-08",
-      "ground_truth_value": "2025-04-08",
-      "judgment": "RIGHT",
-      "notes": "Exact match (case-insensitive)"
-    },
     "interval_start_date": {
       "field_name": "interval_start_date",
       "extracted_value": "2025-02-11",
       "ground_truth_value": "2025-02-11",
       "judgment": "RIGHT",
       "notes": "Exact match (case-insensitive)"
+    },
+    "due_date": {
+      "field_name": "due_date",
+      "extracted_value": "2025-04-08",
+      "ground_truth_value": "2025-04-08",
+      "judgment": "RIGHT",
+      "notes": "Exact match (case-insensitive)"
     }
   },
   "metadata": {
-    "ground_truth_csv_columns": [
-      "statement_id",
-      "statement_date",
-      "accountnumber",
-      "invoicenumber",
-      "amount_due",
-      "due_date",
-      "interval_start_date",
-      "interval_end_date",
-      "charge_rate_currency"
-    ],
-    "extracted_json_keys": [
-      "file_name",
-      "statement_date",
-      "account_number",
-      "provider_name",
-      "amount_due",
-      "due_date",
-      "interval_start_date",
-      "interval_end_date",
-      "amount_due_currency",
-      "recipient_name",
-      "service_address",
-      "tariff",
-      "meters"
-    ],
+    "evaluation_mode": "batched_single_call",
     "fields_with_mismatches": []
   }
 }
