@@ -4,10 +4,6 @@ LLM Evaluator for Invoice Data Extraction
 This module evaluates extracted invoice JSON data against curated ground truth CSV
 using GroundX LLM for semantic comparison of field values.
 
-Requirements:
-    - groundx (pip install groundx)
-    - pandas
-    - requests (for URL fetching)
 """
 
 import json
