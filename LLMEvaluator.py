@@ -22,7 +22,6 @@ from groundx.extract.settings.settings import AgentSettings
 from groundx.extract.services.logger import Logger
 from groundx.extract.agents import AgentCode
 
-
 class Judgment(str, Enum):
     """Enumeration for field judgment results."""
     RIGHT = "RIGHT"
@@ -253,7 +252,8 @@ Do not include any explanation, punctuation, or additional text.
         self.agent_settings = agent_settings or AgentSettings()
         self.logger.debug_msg(
             f"AgentSettings - model_id: {self.agent_settings.model_id}, "
-            f"api_base: {self.agent_settings.api_base}"
+            f"api_base: {self.agent_settings.api_base}, "
+            f"api_base: {self.agent_settings.get_api_key()}"
         )
         
         # Initialize the AgentCode once with system prompt
@@ -280,12 +280,10 @@ Do not include any explanation, punctuation, or additional text.
             Configured AgentCode instance
         """
         self.logger.debug_msg("Creating AgentCode instance...")
-        
+        self.agent_settings.imports = []
         agent = AgentCode(
-            model_id=self.agent_settings.model_id,
-            api_key=self.agent_settings.api_key or self.agent_settings.get_api_key(),
-            api_base=self.agent_settings.api_base,
-            system_prompt=self.SYSTEM_PROMPT,
+            settings=self.agent_settings,
+            log=self.logger
         )
         
         self.logger.debug_msg(f"AgentCode created with model: {self.agent_settings.model_id}")
