@@ -1,5 +1,25 @@
-from LLMEvaluator import LLMEvaluator, Judgment
+from LLMEvaluator import LLMEvaluator, Judgment, EvaluationReport
 # Usage example
+# Convenience function for quick evaluations
+def evaluate_invoice(
+    json_path: str,
+    csv_path: str,
+    output_dir: str = "evaluation_reports"
+) -> EvaluationReport:
+    """
+    Convenience function to evaluate a single invoice JSON.
+    
+    Args:
+        json_path: Path to the extracted JSON file
+        csv_path: Path to the ground truth CSV
+        output_dir: Directory for output reports
+        
+    Returns:
+        EvaluationReport object
+    """
+    evaluator = LLMEvaluator(csv_path=csv_path, output_dir=output_dir)
+    return evaluator.evaluate(json_path)
+
 if __name__ == "__main__":
     # Example configuration
     CSV_PATH = "data/curated.statements.csv"

@@ -386,7 +386,7 @@ YOUR JUDGMENT:"""
         """
         Call the GroundX LLM to get field judgment.
         
-        Uses the AgentSettings configuration to make the LLM call.
+        Uses AgentCode with AgentSettings configuration.
         
         Args:
             prompt: The prompt to send to the LLM
@@ -395,71 +395,41 @@ YOUR JUDGMENT:"""
             Judgment enum (RIGHT or WRONG)
         """
         try:
-            # Use GroundX AgentSettings to make LLM completion call
-            # The exact API depends on the AgentSettings implementation
-            # Common patterns in GroundX SDK:
+            from groundx.extract.agents import AgentCode
             
-            # Option 1: If AgentSettings has a complete/run method
-            if hasattr(self.agent_settings, 'complete'):
-                response = self.agent_settings.complete(prompt)
-            # Option 2: If AgentSettings has an agent property with run method
-            elif hasattr(self.agent_settings, 'agent') and hasattr(self.agent_settings.agent, 'run'):
-                response = self.agent_settings.agent.run(prompt)
-            # Option 3: If AgentSettings has a generate method
-            elif hasattr(self.agent_settings, 'generate'):
-                response = self.agent_settings.generate(prompt)
-            # Option 4: If AgentSettings uses a chat/messages pattern
-            elif hasattr(self.agent_settings, 'chat'):
-                response = self.agent_settings.chat(
-                    messages=[{"role": "user", "content": prompt}]
-                )
-            # Option 5: Direct invoke pattern
-            elif hasattr(self.agent_settings, 'invoke'):
-                response = self.agent_settings.invoke(prompt)
-            else:
-                # Fallback: Try calling the object directly if it's callable
-                if callable(self.agent_settings):
-                    response = self.agent_settings(prompt)
-                else:
-                    raise AttributeError(
-                        "AgentSettings does not have a recognized LLM completion method. "
-                        "Expected one of: complete(), agent.run(), generate(), chat(), invoke()"
-                    )
+            # Create agent with settings
+            agent = AgentCode(
+                model_id=self.agent_settings.model_id,
+                api_key=self.agent_settings.api_key or self.agent_settings.get_api_key(),
+                api_base=self.agent_settings.api_base,
+            )
             
-            # Handle response based on type
+            # Run the prompt
+            response = agent.run(prompt)
+            
+            # Handle response
             if isinstance(response, str):
                 response_text = response
             elif hasattr(response, 'text'):
                 response_text = response.text
             elif hasattr(response, 'content'):
                 response_text = response.content
-            elif hasattr(response, 'message'):
-                response_text = response.message
-            elif isinstance(response, dict):
-                response_text = response.get('text') or response.get('content') or response.get('message', '')
             else:
                 response_text = str(response)
             
-            # Extract and validate judgment
+            # Extract judgment
             judgment_text = response_text.strip().upper()
             
-            # Handle potential variations in response
             if "RIGHT" in judgment_text:
                 return Judgment.RIGHT
             elif "WRONG" in judgment_text:
                 return Judgment.WRONG
             else:
-                self.logger.warning(
-                    f"Unexpected LLM response: '{judgment_text}', defaulting to WRONG"
-                )
+                self.logger.warning_msg(f"Unexpected LLM response: '{judgment_text}', defaulting to WRONG")
                 return Judgment.WRONG
-            
-        except AttributeError as e:
-            self.logger.error_msg(f"AgentSettings API error: {str(e)}")
-            raise
+                
         except Exception as e:
             self.logger.error_msg(f"LLM call failed: {str(e)}")
-            # On error, default to WRONG to be conservative
             return Judgment.WRONG
     
     def _get_comparable_fields(
@@ -799,26 +769,4 @@ YOUR JUDGMENT:"""
         cache_size = len(self._judgment_cache)
         self._judgment_cache.clear()
         self.logger.info_msg(f"Cleared {cache_size} cached judgments")
-
-
-# Convenience function for quick evaluations
-def evaluate_invoice(
-    json_path: str,
-    csv_path: str,
-    output_dir: str = "evaluation_reports"
-) -> EvaluationReport:
-    """
-    Convenience function to evaluate a single invoice JSON.
-    
-    Args:
-        json_path: Path to the extracted JSON file
-        csv_path: Path to the ground truth CSV
-        output_dir: Directory for output reports
-        
-    Returns:
-        EvaluationReport object
-    """
-    evaluator = LLMEvaluator(csv_path=csv_path, output_dir=output_dir)
-    return evaluator.evaluate(json_path)
-
 

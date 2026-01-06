@@ -1,35 +1,35 @@
 {
-  "evaluation_id": "eval_20260106_074959_1F00DF16",
+  "evaluation_id": "eval_20260106_080853_1F00DF16",
   "json_file": "data/214f42ca-2349-4919-a11e-540b65f4ab85-extract.json",
   "statement_id": "1F00DF167936DE188831DE79A77EF792",
-  "evaluation_timestamp": "2026-01-06T07:49:59.720195",
-  "processing_time_seconds": 0.001,
+  "evaluation_timestamp": "2026-01-06T08:08:53.861220",
+  "processing_time_seconds": 0.002,
   "summary": {
     "total_fields_evaluated": 5,
-    "fields_right": 5,
-    "fields_wrong": 0,
+    "fields_right": 4,
+    "fields_wrong": 1,
     "fields_skipped": 0,
-    "accuracy_percentage": 100.0
+    "accuracy_percentage": 80.0
   },
   "field_details": {
-    "interval_end_date": {
-      "field_name": "interval_end_date",
-      "extracted_value": "2025-03-11",
-      "ground_truth_value": "2025-03-11",
+    "interval_start_date": {
+      "field_name": "interval_start_date",
+      "extracted_value": "2025-02-11",
+      "ground_truth_value": "2025-02-11",
       "judgment": "RIGHT",
       "notes": "Exact match (case-insensitive)"
+    },
+    "statement_date": {
+      "field_name": "statement_date",
+      "extracted_value": "2025-03-17",
+      "ground_truth_value": "2025-04-17",
+      "judgment": "WRONG",
+      "notes": "LLM semantic comparison"
     },
     "amount_due": {
       "field_name": "amount_due",
       "extracted_value": "76.2",
       "ground_truth_value": "76.2",
-      "judgment": "RIGHT",
-      "notes": "Exact match (case-insensitive)"
-    },
-    "interval_start_date": {
-      "field_name": "interval_start_date",
-      "extracted_value": "2025-02-11",
-      "ground_truth_value": "2025-02-11",
       "judgment": "RIGHT",
       "notes": "Exact match (case-insensitive)"
     },
@@ -40,10 +40,10 @@
       "judgment": "RIGHT",
       "notes": "Exact match (case-insensitive)"
     },
-    "statement_date": {
-      "field_name": "statement_date",
-      "extracted_value": "2025-03-17",
-      "ground_truth_value": "2025-03-17",
+    "interval_end_date": {
+      "field_name": "interval_end_date",
+      "extracted_value": "2025-03-11",
+      "ground_truth_value": "2025-03-11",
       "judgment": "RIGHT",
       "notes": "Exact match (case-insensitive)"
     }
@@ -75,6 +75,8 @@
       "tariff",
       "meters"
     ],
-    "fields_with_mismatches": []
+    "fields_with_mismatches": [
+      "statement_date"
+    ]
   }
 }
