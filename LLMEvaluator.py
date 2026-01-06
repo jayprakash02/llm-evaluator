@@ -11,7 +11,7 @@ import pandas as pd
 import os
 import re
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Tuple, Union
+from typing import Dict, List, Any, Optional, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
@@ -21,6 +21,7 @@ import hashlib
 from groundx.extract.settings.settings import AgentSettings
 from groundx.extract.services.logger import Logger
 from groundx.extract.agents import AgentCode
+
 
 class Judgment(str, Enum):
     """Enumeration for field judgment results."""
@@ -92,13 +93,13 @@ class LLMEvaluator:
     """
     Evaluates extracted invoice JSON data against curated ground truth CSV using LLM judgment.
     
-    This class compares each field from an extracted JSON file against the corresponding
-    ground truth values in a CSV file, using GroundX LLM to determine if each field is 
-    RIGHT or WRONG, accounting for formatting differences.
+    The AgentCode is initialized once with a system prompt containing evaluation rules
+    and examples. Each field evaluation uses the same agent instance for efficiency.
     
     Attributes:
         ground_truth_df: DataFrame containing ground truth data from CSV
         agent_settings: GroundX AgentSettings for LLM configuration
+        agent: AgentCode instance for LLM calls (initialized once)
         logger: GroundX Logger instance
         cache: Dictionary for caching LLM judgments to avoid redundant calls
     
@@ -108,6 +109,96 @@ class LLMEvaluator:
         >>> print(f"Accuracy: {report.accuracy_percentage}%")
     """
     
+    # System prompt for the evaluation agent
+    SYSTEM_PROMPT = """You are an expert evaluator for invoice data extraction accuracy.
+
+Your task is to compare EXTRACTED VALUES against GROUND TRUTH VALUES and determine if they are semantically equivalent.
+
+## EVALUATION RULES
+
+### 1. FORMATTING DIFFERENCES (Acceptable - Mark as RIGHT)
+- Spacing variations: "John Smith" = "John  Smith"
+- Case differences: "ACME Corp" = "acme corp" = "Acme Corp"
+- Punctuation: "123-456-7890" = "123.456.7890" = "(123) 456-7890"
+
+### 2. NUMERICAL EQUIVALENCES (Acceptable - Mark as RIGHT)
+- Currency formatting: "1000" = "1,000" = "1000.00" = "$1,000.00" = "USD 1000"
+- Percentages: "5%" = "5.0%" = "0.05" (when context is percentage)
+- Leading zeros: "007" = "7"
+
+### 3. DATE FORMAT VARIATIONS (Acceptable - Mark as RIGHT)
+- "2024-01-15" = "01/15/2024" = "15/01/2024" = "January 15, 2024" = "Jan 15, 2024" = "15-Jan-2024"
+
+### 4. COMMON OCR ERRORS (Consider - Usually RIGHT if meaning preserved)
+- "O" vs "0" (letter O vs zero)
+- "I" vs "1" vs "l" (letter I vs one vs lowercase L)
+- "S" vs "5"
+- "B" vs "8"
+
+### 5. MUST BE WRONG
+- Completely different values
+- Missing significant information
+- Different dates (not just format)
+- Different amounts
+- Wrong account/invoice numbers
+
+## EXAMPLES
+
+Example 1:
+FIELD: account_number
+EXTRACTED: "ACC-12345"
+GROUND TRUTH: "ACC12345"
+JUDGMENT: RIGHT
+(Same number, minor formatting difference)
+
+Example 2:
+FIELD: amount_due
+EXTRACTED: "$1,234.56"
+GROUND TRUTH: "1234.56"
+JUDGMENT: RIGHT
+(Same amount, currency symbol and comma are formatting)
+
+Example 3:
+FIELD: due_date
+EXTRACTED: "2024-03-15"
+GROUND TRUTH: "March 15, 2024"
+JUDGMENT: RIGHT
+(Same date, different format)
+
+Example 4:
+FIELD: invoice_number
+EXTRACTED: "INV-001"
+GROUND TRUTH: "INV-002"
+JUDGMENT: WRONG
+(Different invoice numbers)
+
+Example 5:
+FIELD: vendor_name
+EXTRACTED: "ACME Corporation"
+GROUND TRUTH: "Acme Corp."
+JUDGMENT: RIGHT
+(Same company, minor variations)
+
+Example 6:
+FIELD: total_amount
+EXTRACTED: "500.00"
+GROUND TRUTH: "5000.00"
+JUDGMENT: WRONG
+(Different amounts - order of magnitude difference)
+
+Example 7:
+FIELD: account_number
+EXTRACTED: "l2345678"
+GROUND TRUTH: "12345678"
+JUDGMENT: RIGHT
+(OCR error: lowercase L confused with 1)
+
+## RESPONSE FORMAT
+
+You must respond with EXACTLY one word: either "RIGHT" or "WRONG"
+Do not include any explanation, punctuation, or additional text.
+"""
+
     # Field name mappings for common variations (JSON key -> CSV column)
     FIELD_MAPPINGS: Dict[str, str] = {
         "accountNumber": "account_number",
@@ -118,7 +209,6 @@ class LLMEvaluator:
         "totalAmount": "total_amount",
         "vendorName": "vendor_name",
         "customerName": "customer_name",
-        # Add more mappings as needed
     }
     
     # Fields to exclude from comparison (internal/metadata fields)
@@ -129,10 +219,15 @@ class LLMEvaluator:
         csv_path: str, 
         agent_settings: Optional[AgentSettings] = None,
         output_dir: str = "evaluation_reports",
-        enable_caching: bool = True
+        enable_caching: bool = True,
+        enable_tracing: bool = False,
+        log_level: str = "INFO"
     ):
         """
-        Initialize the LLM evaluator with ground truth data.
+        Initialize the LLM evaluator with ground truth data and AgentCode.
+        
+        The AgentCode is created once here with the system prompt and reused
+        for all evaluations, making batch processing more efficient.
         
         Args:
             csv_path: Path to the curated CSV file containing ground truth data
@@ -140,12 +235,14 @@ class LLMEvaluator:
                            If None, default settings will be used.
             output_dir: Directory for saving evaluation reports
             enable_caching: Whether to cache LLM judgments for identical value pairs
+            enable_tracing: Whether to enable OpenTelemetry tracing
+            log_level: Logging level ("DEBUG", "INFO", "WARNING", "ERROR")
         
         Raises:
             FileNotFoundError: If the CSV file doesn't exist
             ValueError: If the CSV is empty or missing required columns
         """
-        self.logger = Logger(__name__,'INFO')
+        self.logger = Logger(__name__, log_level)
         self.logger.info_msg(f"Initializing LLMEvaluator with CSV: {csv_path}")
         
         # Validate and load ground truth data
@@ -154,9 +251,14 @@ class LLMEvaluator:
         
         # Initialize GroundX agent settings
         self.agent_settings = agent_settings or AgentSettings()
-        self.logger.info_msg(
-            f"Using AgentSettings with model: {getattr(self.agent_settings, 'model', 'default')}"
+        self.logger.debug_msg(
+            f"AgentSettings - model_id: {self.agent_settings.model_id}, "
+            f"api_base: {self.agent_settings.api_base}"
         )
+        
+        # Initialize the AgentCode once with system prompt
+        self.agent = self._create_agent()
+        self.logger.info_msg("AgentCode initialized with evaluation system prompt")
         
         # Configuration
         self.output_dir = output_dir
@@ -165,7 +267,58 @@ class LLMEvaluator:
         
         # Create output directory if needed
         os.makedirs(self.output_dir, exist_ok=True)
-        self.logger.info_msg(f"Output directory: {self.output_dir}")
+        self.logger.debug_msg(f"Output directory: {self.output_dir}")
+
+        if enable_tracing:
+            self._setup_tracing()
+    
+    def _create_agent(self) -> AgentCode:
+        """
+        Create and configure the AgentCode instance with system prompt.
+        
+        Returns:
+            Configured AgentCode instance
+        """
+        self.logger.debug_msg("Creating AgentCode instance...")
+        
+        agent = AgentCode(
+            model_id=self.agent_settings.model_id,
+            api_key=self.agent_settings.api_key or self.agent_settings.get_api_key(),
+            api_base=self.agent_settings.api_base,
+            system_prompt=self.SYSTEM_PROMPT,
+        )
+        
+        self.logger.debug_msg(f"AgentCode created with model: {self.agent_settings.model_id}")
+        return agent
+
+    def _setup_tracing(self) -> None:
+        """
+        Setup OpenTelemetry tracing for LLM calls.
+        
+        Raises:
+            ImportError: If required tracing packages are not installed
+        """
+        try:
+            from openinference.instrumentation.smolagents import SmolagentsInstrumentor
+            from opentelemetry import trace
+            from opentelemetry.sdk.trace import TracerProvider
+            from opentelemetry.sdk.trace.export import (
+                ConsoleSpanExporter,
+                BatchSpanProcessor,
+            )
+            
+            trace.set_tracer_provider(TracerProvider())
+            tracer_provider = trace.get_tracer_provider()
+            
+            span_processor = BatchSpanProcessor(ConsoleSpanExporter())
+            tracer_provider.add_span_processor(span_processor)
+            
+            SmolagentsInstrumentor().instrument(tracer_provider=tracer_provider)
+            self.logger.info_msg("OpenTelemetry tracing initialized")
+        
+        except ImportError as e:
+            self.logger.error_msg(f"Failed to import tracing packages: {e}")
+            raise
     
     def _validate_csv_path(self, csv_path: str) -> None:
         """Validate that the CSV path exists and is readable."""
@@ -189,9 +342,11 @@ class LLMEvaluator:
         """
         try:
             df = pd.read_csv(csv_path)
+            
             # Normalize all column names to lowercase
             df.columns = df.columns.str.lower()
-            self.logger.info_msg(f"Loaded ground truth CSV with {len(df)} records")
+            
+            self.logger.debug_msg(f"Loaded ground truth CSV with {len(df)} records")
             self.logger.debug_msg(f"CSV columns: {list(df.columns)}")
             
             if df.empty:
@@ -215,9 +370,6 @@ class LLMEvaluator:
         """
         Match JSON file to the correct CSV row using file_name/statement_id.
         
-        The JSON's `file_name` field (e.g., "214f42ca-2349-4919-a11e-540b65f4ab85.pdf")
-        should match a `statement_id` in the CSV after stripping the .pdf extension.
-        
         Args:
             json_data: Dictionary containing extracted JSON data
             
@@ -235,7 +387,7 @@ class LLMEvaluator:
         # Extract statement_id by removing .pdf extension
         statement_id = Path(file_name).stem
         
-        self.logger.info_msg(f"Matching JSON: file_name='{file_name}' -> statement_id='{statement_id}'")
+        self.logger.debug_msg(f"Matching JSON: file_name='{file_name}' -> statement_id='{statement_id}'")
         
         # Find matching row in CSV
         matching_rows = self.ground_truth_df[
@@ -258,7 +410,7 @@ class LLMEvaluator:
             raise ValueError(error_msg)
         
         if len(matching_rows) > 1:
-            self.logger.warning(
+            self.logger.warning_msg(
                 f"Multiple CSV rows ({len(matching_rows)}) found for "
                 f"statement_id: '{statement_id}', using first match"
             )
@@ -268,8 +420,6 @@ class LLMEvaluator:
     def _normalize_field_name(self, field_name: str) -> str:
         """
         Normalize a field name to match CSV column conventions.
-        
-        Handles common variations like camelCase -> snake_case.
         
         Args:
             field_name: Original field name from JSON
@@ -289,8 +439,6 @@ class LLMEvaluator:
     def _clean_field_value(self, value: Any) -> str:
         """
         Clean and normalize field values for comparison.
-        
-        Handles various data types and normalizes formatting.
         
         Args:
             value: Raw field value (could be string, number, NaN, None, etc.)
@@ -318,20 +466,17 @@ class LLMEvaluator:
         content = f"{field_name}|{extracted}|{ground_truth}"
         return hashlib.md5(content.encode()).hexdigest()
     
-    def _create_llm_prompt(
+    def _create_user_prompt(
         self, 
         field_name: str, 
         extracted_value: str, 
         ground_truth_value: str
     ) -> str:
         """
-        Create a prompt for the LLM to judge field correctness.
+        Create a user prompt for field evaluation.
         
-        The prompt is designed to:
-        1. Handle formatting differences (spacing, punctuation, case)
-        2. Handle numerical equivalences (1000 vs 1,000 vs 1000.00)
-        3. Handle date format variations
-        4. Handle common OCR errors
+        The system prompt already contains rules and examples, so this
+        is a concise prompt for the specific field comparison.
         
         Args:
             field_name: Name of the field being evaluated
@@ -339,67 +484,35 @@ class LLMEvaluator:
             ground_truth_value: Ground truth value from CSV
             
         Returns:
-            Formatted prompt for the LLM
+            Formatted user prompt
         """
-        prompt = f"""You are an expert evaluator for invoice data extraction accuracy.
+        prompt = f"""Evaluate this field extraction:
 
-TASK: Determine if the EXTRACTED VALUE is semantically equivalent to the GROUND TRUTH VALUE.
+FIELD: {field_name}
+EXTRACTED: "{extracted_value}"
+GROUND TRUTH: "{ground_truth_value}"
 
-FIELD NAME: {field_name}
-EXTRACTED VALUE: "{extracted_value}"
-GROUND TRUTH VALUE: "{ground_truth_value}"
-
-EVALUATION RULES:
-1. FORMATTING DIFFERENCES are acceptable:
-   - Spacing/punctuation variations ("John Smith" = "John  Smith" = "JOHN SMITH")
-   - Case differences are acceptable
-   
-2. NUMERICAL EQUIVALENCES are acceptable:
-   - "1000" = "1,000" = "1000.00" = "$1,000.00"
-   - "5%" = "5.0%" = "0.05"
-   
-3. DATE FORMAT VARIATIONS are acceptable:
-   - "2024-01-15" = "01/15/2024" = "15/01/2024" = "January 15, 2024" = "Jan 15, 2024"
-   
-4. COMMON OCR ERRORS should be considered:
-   - "O" confused with "0"
-   - "I" confused with "1" or "l"
-   - "S" confused with "5"
-   
-5. SEMANTIC MEANING must be preserved:
-   - The core information must be the same
-   - Minor typos that don't change meaning are acceptable
-
-RESPOND WITH EXACTLY ONE WORD:
-- "RIGHT" if the extracted value is essentially correct
-- "WRONG" if the extracted value is incorrect or significantly different
-
-YOUR JUDGMENT:"""
+Respond with only "RIGHT" or "WRONG":"""
         
         return prompt
     
-    def _call_llm_for_judgment(self, prompt: str) -> Judgment:
+    def _call_llm_for_judgment(self, user_prompt: str) -> Judgment:
         """
-        Call the GroundX LLM to get field judgment.
+        Call the LLM agent to get field judgment.
         
-        Uses AgentCode with AgentSettings configuration.
+        Uses the pre-initialized AgentCode with the system prompt.
         
         Args:
-            prompt: The prompt to send to the LLM
+            user_prompt: The user prompt for this specific evaluation
             
         Returns:
             Judgment enum (RIGHT or WRONG)
         """
         try:
-            # Create agent with settings
-            agent = AgentCode(
-                model_id=self.agent_settings.model_id,
-                api_key=self.agent_settings.api_key or self.agent_settings.get_api_key(),
-                api_base=self.agent_settings.api_base,
-            )
+            self.logger.debug_msg(f"Calling LLM with prompt: {user_prompt[:100]}...")
             
-            # Run the prompt
-            response = agent.run(prompt)
+            # Run the agent with user prompt (system prompt already configured)
+            response = self.agent.run(user_prompt)
             
             # Handle response
             if isinstance(response, str):
@@ -410,6 +523,8 @@ YOUR JUDGMENT:"""
                 response_text = response.content
             else:
                 response_text = str(response)
+            
+            self.logger.debug_msg(f"LLM response: {response_text}")
             
             # Extract judgment
             judgment_text = response_text.strip().upper()
@@ -434,9 +549,6 @@ YOUR JUDGMENT:"""
         """
         Get list of fields that can be compared between JSON and CSV.
         
-        Returns tuples of (json_key, csv_column, extracted_value, ground_truth_value).
-        Logs any mismatched fields.
-        
         Args:
             json_data: Extracted JSON data
             ground_truth: Ground truth row from CSV
@@ -448,7 +560,6 @@ YOUR JUDGMENT:"""
         csv_columns = set(ground_truth.index) - {'statement_id'}
         json_keys = set(json_data.keys()) - self.EXCLUDED_FIELDS
         
-        # Track matched and unmatched fields for logging
         matched_csv_columns = set()
         
         for json_key in json_keys:
@@ -470,10 +581,10 @@ YOUR JUDGMENT:"""
             comparable_fields.append((json_key, csv_col, extracted_value, ground_truth_value))
             matched_csv_columns.add(csv_col)
         
-        # Log unmatched CSV columns
+        # Log unmatched CSV columns at debug level
         unmatched_csv = csv_columns - matched_csv_columns
         if unmatched_csv:
-            self.logger.info_msg(f"CSV columns without JSON match: {unmatched_csv}")
+            self.logger.debug_msg(f"CSV columns without JSON match: {unmatched_csv}")
         
         return comparable_fields
     
@@ -495,10 +606,9 @@ YOUR JUDGMENT:"""
         results = []
         comparable_fields = self._get_comparable_fields(json_data, ground_truth)
         
-        self.logger.info_msg(f"Comparing {len(comparable_fields)} fields")
+        self.logger.debug_msg(f"Comparing {len(comparable_fields)} fields")
         
         for json_key, csv_col, extracted_value, ground_truth_value in comparable_fields:
-            # Use csv_col as the canonical field name for reporting
             field_name = csv_col
             
             # Skip comparison if both are empty
@@ -510,6 +620,7 @@ YOUR JUDGMENT:"""
                     judgment=Judgment.SKIPPED,
                     notes="Both values empty - skipped comparison"
                 ))
+                self.logger.debug_msg(f"Field '{field_name}': SKIPPED (both empty)")
                 continue
             
             # Check cache first
@@ -517,16 +628,19 @@ YOUR JUDGMENT:"""
             if self.enable_caching and cache_key in self._judgment_cache:
                 judgment = self._judgment_cache[cache_key]
                 notes = "Cached judgment"
+                self.logger.debug_msg(f"Field '{field_name}': {judgment.value} (cached)")
             else:
                 # Quick check for exact match (skip LLM call)
                 if extracted_value.lower() == ground_truth_value.lower():
                     judgment = Judgment.RIGHT
                     notes = "Exact match (case-insensitive)"
+                    self.logger.debug_msg(f"Field '{field_name}': RIGHT (exact match)")
                 else:
-                    # Create LLM prompt and get judgment
-                    prompt = self._create_llm_prompt(field_name, extracted_value, ground_truth_value)
-                    judgment = self._call_llm_for_judgment(prompt)
+                    # Create user prompt and get judgment from LLM
+                    user_prompt = self._create_user_prompt(field_name, extracted_value, ground_truth_value)
+                    judgment = self._call_llm_for_judgment(user_prompt)
                     notes = "LLM semantic comparison"
+                    self.logger.debug_msg(f"Field '{field_name}': {judgment.value} (LLM)")
                 
                 # Cache the result
                 if self.enable_caching:
@@ -547,8 +661,6 @@ YOUR JUDGMENT:"""
                     f"MISMATCH: {field_name} - "
                     f"extracted='{extracted_value}' vs ground_truth='{ground_truth_value}'"
                 )
-            else:
-                self.logger.debug_msg(f"Field '{field_name}': {judgment.value}")
         
         return results
     
@@ -564,14 +676,16 @@ YOUR JUDGMENT:"""
             
         Raises:
             ValueError: If JSON is invalid or cannot be loaded
+            FileNotFoundError: If local file doesn't exist
         """
         if json_path.startswith(('http://', 'https://')):
             import requests
             try:
+                self.logger.debug_msg(f"Fetching JSON from URL: {json_path}")
                 response = requests.get(json_path, timeout=30)
                 response.raise_for_status()
                 json_data = response.json()
-                self.logger.info_msg(f"Loaded JSON from URL: {json_path}")
+                self.logger.debug_msg(f"Loaded JSON from URL: {json_path}")
             except requests.exceptions.Timeout:
                 raise ValueError(f"Timeout fetching URL: {json_path}")
             except requests.exceptions.RequestException as e:
@@ -582,7 +696,7 @@ YOUR JUDGMENT:"""
             try:
                 with open(json_path, 'r', encoding='utf-8') as f:
                     json_data = json.load(f)
-                self.logger.info_msg(f"Loaded JSON from file: {json_path}")
+                self.logger.debug_msg(f"Loaded JSON from file: {json_path}")
             except json.JSONDecodeError as e:
                 raise ValueError(f"Invalid JSON in file: {json_path} - {str(e)}")
         
@@ -594,10 +708,7 @@ YOUR JUDGMENT:"""
         save_report: bool = True
     ) -> EvaluationReport:
         """
-        Main evaluation method that processes a single JSON file.
-        
-        Matches the JSON to a ground truth CSV row, compares all fields using
-        LLM judgment, and generates a comprehensive evaluation report.
+        Evaluate a single JSON file against ground truth.
         
         Args:
             json_path: Path (local or URL) to the extracted JSON file
@@ -661,14 +772,6 @@ YOUR JUDGMENT:"""
             f"({accuracy:.2f}%) | Skipped: {fields_skipped} | Statement ID: {statement_id}"
         )
         
-        # Log specific mismatches at INFO level
-        for result in field_results:
-            if result.judgment == Judgment.WRONG:
-                self.logger.info_msg(
-                    f"  - WRONG: {result.field_name}: "
-                    f"'{result.extracted_value}' != '{result.ground_truth_value}'"
-                )
-        
         # Save report if requested
         if save_report:
             output_file = os.path.join(
@@ -677,7 +780,7 @@ YOUR JUDGMENT:"""
             )
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
-            self.logger.info_msg(f"Report saved to: {output_file}")
+            self.logger.debug_msg(f"Report saved to: {output_file}")
         
         return report
     
@@ -687,7 +790,10 @@ YOUR JUDGMENT:"""
         continue_on_error: bool = True
     ) -> Dict[str, Any]:
         """
-        Evaluate multiple JSON files and generate aggregated report.
+        Evaluate multiple JSON files using the same agent instance.
+        
+        This is more efficient than creating separate evaluators because
+        the AgentCode is reused across all evaluations.
         
         Args:
             json_paths: List of paths to JSON files
@@ -705,7 +811,7 @@ YOUR JUDGMENT:"""
         document_accuracies = []
         
         for i, json_path in enumerate(json_paths, 1):
-            self.logger.info_msg(f"Processing [{i}/{len(json_paths)}]: {json_path}")
+            self.logger.debug_msg(f"Processing [{i}/{len(json_paths)}]: {json_path}")
             
             try:
                 report = self.evaluate(json_path, save_report=True)
@@ -752,8 +858,7 @@ YOUR JUDGMENT:"""
         
         self.logger.info_msg(
             f"Batch evaluation completed: {successful}/{len(json_paths)} successful | "
-            f"Overall accuracy: {overall_accuracy:.2f}% | "
-            f"Report: {batch_report_file}"
+            f"Overall accuracy: {overall_accuracy:.2f}%"
         )
         
         return batch_report
@@ -762,5 +867,15 @@ YOUR JUDGMENT:"""
         """Clear the LLM judgment cache."""
         cache_size = len(self._judgment_cache)
         self._judgment_cache.clear()
-        self.logger.info_msg(f"Cleared {cache_size} cached judgments")
+        self.logger.debug_msg(f"Cleared {cache_size} cached judgments")
+    
+    def reset_agent(self) -> None:
+        """
+        Reset the agent instance.
+        
+        Useful if you need to refresh the agent state between batches.
+        """
+        self.logger.debug_msg("Resetting AgentCode instance...")
+        self.agent = self._create_agent()
+        self.logger.debug_msg("AgentCode reset complete")
 

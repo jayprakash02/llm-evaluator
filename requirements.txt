@@ -8,3 +8,5 @@ google-api-python-client
 gspread
 fastapi
 dateparser
+openinference-instrumentation-smolagents 
+opentelemetry-sdk
