@@ -1,4 +1,4 @@
-groundx
+groundx==3.0.5
 pandas
 pytest
 Pillow
