@@ -1,4 +1,4 @@
-import LLMEvaluator
+from LLMEvaluator import LLMEvaluator, Judgment
 # Usage example
 if __name__ == "__main__":
     # Example configuration

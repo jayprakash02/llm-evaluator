@@ -149,8 +149,8 @@ class LLMEvaluator:
             FileNotFoundError: If the CSV file doesn't exist
             ValueError: If the CSV is empty or missing required columns
         """
-        self.logger = Logger(__name__)
-        self.logger.info(f"Initializing LLMEvaluator with CSV: {csv_path}")
+        self.logger = Logger(__name__,'INFO')
+        self.logger.info_msg(f"Initializing LLMEvaluator with CSV: {csv_path}")
         
         # Validate and load ground truth data
         self._validate_csv_path(csv_path)
@@ -158,7 +158,7 @@ class LLMEvaluator:
         
         # Initialize GroundX agent settings
         self.agent_settings = agent_settings or AgentSettings()
-        self.logger.info(
+        self.logger.info_msg(
             f"Using AgentSettings with model: {getattr(self.agent_settings, 'model', 'default')}"
         )
         
@@ -169,7 +169,7 @@ class LLMEvaluator:
         
         # Create output directory if needed
         os.makedirs(self.output_dir, exist_ok=True)
-        self.logger.info(f"Output directory: {self.output_dir}")
+        self.logger.info_msg(f"Output directory: {self.output_dir}")
     
     def _validate_csv_path(self, csv_path: str) -> None:
         """Validate that the CSV path exists and is readable."""
@@ -193,8 +193,10 @@ class LLMEvaluator:
         """
         try:
             df = pd.read_csv(csv_path)
-            self.logger.info(f"Loaded ground truth CSV with {len(df)} records")
-            self.logger.debug(f"CSV columns: {list(df.columns)}")
+            # Normalize all column names to lowercase
+            df.columns = df.columns.str.lower()
+            self.logger.info_msg(f"Loaded ground truth CSV with {len(df)} records")
+            self.logger.debug_msg(f"CSV columns: {list(df.columns)}")
             
             if df.empty:
                 raise ValueError("CSV file is empty")
@@ -210,7 +212,7 @@ class LLMEvaluator:
         except pd.errors.EmptyDataError:
             raise ValueError(f"CSV file is empty: {csv_path}")
         except Exception as e:
-            self.logger.error(f"Failed to load CSV: {str(e)}")
+            self.logger.error_msg(f"Failed to load CSV: {str(e)}")
             raise
     
     def _match_json_to_csv(self, json_data: Dict[str, Any]) -> pd.Series:
@@ -237,7 +239,7 @@ class LLMEvaluator:
         # Extract statement_id by removing .pdf extension
         statement_id = Path(file_name).stem
         
-        self.logger.info(f"Matching JSON: file_name='{file_name}' -> statement_id='{statement_id}'")
+        self.logger.info_msg(f"Matching JSON: file_name='{file_name}' -> statement_id='{statement_id}'")
         
         # Find matching row in CSV
         matching_rows = self.ground_truth_df[
@@ -256,7 +258,7 @@ class LLMEvaluator:
                 f"No CSV row found for statement_id: '{statement_id}'. "
                 f"Available IDs (first 5): {available_ids}"
             )
-            self.logger.error(error_msg)
+            self.logger.error_msg(error_msg)
             raise ValueError(error_msg)
         
         if len(matching_rows) > 1:
@@ -453,10 +455,10 @@ YOUR JUDGMENT:"""
                 return Judgment.WRONG
             
         except AttributeError as e:
-            self.logger.error(f"AgentSettings API error: {str(e)}")
+            self.logger.error_msg(f"AgentSettings API error: {str(e)}")
             raise
         except Exception as e:
-            self.logger.error(f"LLM call failed: {str(e)}")
+            self.logger.error_msg(f"LLM call failed: {str(e)}")
             # On error, default to WRONG to be conservative
             return Judgment.WRONG
     
@@ -495,7 +497,7 @@ YOUR JUDGMENT:"""
                 if normalized_key in csv_columns:
                     csv_col = normalized_key
                 else:
-                    self.logger.debug(f"JSON key '{json_key}' has no matching CSV column")
+                    self.logger.debug_msg(f"JSON key '{json_key}' has no matching CSV column")
                     continue
             
             extracted_value = self._clean_field_value(json_data.get(json_key, ""))
@@ -507,7 +509,7 @@ YOUR JUDGMENT:"""
         # Log unmatched CSV columns
         unmatched_csv = csv_columns - matched_csv_columns
         if unmatched_csv:
-            self.logger.info(f"CSV columns without JSON match: {unmatched_csv}")
+            self.logger.info_msg(f"CSV columns without JSON match: {unmatched_csv}")
         
         return comparable_fields
     
@@ -529,7 +531,7 @@ YOUR JUDGMENT:"""
         results = []
         comparable_fields = self._get_comparable_fields(json_data, ground_truth)
         
-        self.logger.info(f"Comparing {len(comparable_fields)} fields")
+        self.logger.info_msg(f"Comparing {len(comparable_fields)} fields")
         
         for json_key, csv_col, extracted_value, ground_truth_value in comparable_fields:
             # Use csv_col as the canonical field name for reporting
@@ -577,12 +579,12 @@ YOUR JUDGMENT:"""
             
             # Log mismatches at INFO level for visibility
             if judgment == Judgment.WRONG:
-                self.logger.info(
+                self.logger.info_msg(
                     f"MISMATCH: {field_name} - "
                     f"extracted='{extracted_value}' vs ground_truth='{ground_truth_value}'"
                 )
             else:
-                self.logger.debug(f"Field '{field_name}': {judgment.value}")
+                self.logger.debug_msg(f"Field '{field_name}': {judgment.value}")
         
         return results
     
@@ -605,7 +607,7 @@ YOUR JUDGMENT:"""
                 response = requests.get(json_path, timeout=30)
                 response.raise_for_status()
                 json_data = response.json()
-                self.logger.info(f"Loaded JSON from URL: {json_path}")
+                self.logger.info_msg(f"Loaded JSON from URL: {json_path}")
             except requests.exceptions.Timeout:
                 raise ValueError(f"Timeout fetching URL: {json_path}")
             except requests.exceptions.RequestException as e:
@@ -616,7 +618,7 @@ YOUR JUDGMENT:"""
             try:
                 with open(json_path, 'r', encoding='utf-8') as f:
                     json_data = json.load(f)
-                self.logger.info(f"Loaded JSON from file: {json_path}")
+                self.logger.info_msg(f"Loaded JSON from file: {json_path}")
             except json.JSONDecodeError as e:
                 raise ValueError(f"Invalid JSON in file: {json_path} - {str(e)}")
         
@@ -645,7 +647,7 @@ YOUR JUDGMENT:"""
             ValueError: If JSON cannot be matched to CSV or is invalid
         """
         start_time = datetime.now()
-        self.logger.info(f"Starting evaluation for: {json_path}")
+        self.logger.info_msg(f"Starting evaluation for: {json_path}")
         
         # Load JSON data
         json_data = self._load_json_data(json_path)
@@ -690,7 +692,7 @@ YOUR JUDGMENT:"""
         )
         
         # Log summary
-        self.logger.info(
+        self.logger.info_msg(
             f"Evaluation completed: {fields_right}/{evaluated_fields} fields correct "
             f"({accuracy:.2f}%) | Skipped: {fields_skipped} | Statement ID: {statement_id}"
         )
@@ -698,7 +700,7 @@ YOUR JUDGMENT:"""
         # Log specific mismatches at INFO level
         for result in field_results:
             if result.judgment == Judgment.WRONG:
-                self.logger.info(
+                self.logger.info_msg(
                     f"  - WRONG: {result.field_name}: "
                     f"'{result.extracted_value}' != '{result.ground_truth_value}'"
                 )
@@ -711,7 +713,7 @@ YOUR JUDGMENT:"""
             )
             with open(output_file, 'w', encoding='utf-8') as f:
                 json.dump(report.to_dict(), f, indent=2, ensure_ascii=False)
-            self.logger.info(f"Report saved to: {output_file}")
+            self.logger.info_msg(f"Report saved to: {output_file}")
         
         return report
     
@@ -730,7 +732,7 @@ YOUR JUDGMENT:"""
         Returns:
             Aggregated batch evaluation report
         """
-        self.logger.info(f"Starting batch evaluation of {len(json_paths)} files")
+        self.logger.info_msg(f"Starting batch evaluation of {len(json_paths)} files")
         
         batch_results = []
         successful = 0
@@ -739,7 +741,7 @@ YOUR JUDGMENT:"""
         document_accuracies = []
         
         for i, json_path in enumerate(json_paths, 1):
-            self.logger.info(f"Processing [{i}/{len(json_paths)}]: {json_path}")
+            self.logger.info_msg(f"Processing [{i}/{len(json_paths)}]: {json_path}")
             
             try:
                 report = self.evaluate(json_path, save_report=True)
@@ -748,7 +750,7 @@ YOUR JUDGMENT:"""
                 document_accuracies.append(report.accuracy_percentage)
                 
             except Exception as e:
-                self.logger.error(f"Failed to evaluate {json_path}: {str(e)}")
+                self.logger.error_msg(f"Failed to evaluate {json_path}: {str(e)}")
                 failed += 1
                 failed_files.append({"file": json_path, "error": str(e)})
                 
@@ -784,7 +786,7 @@ YOUR JUDGMENT:"""
         with open(batch_report_file, 'w', encoding='utf-8') as f:
             json.dump(batch_report, f, indent=2, ensure_ascii=False)
         
-        self.logger.info(
+        self.logger.info_msg(
             f"Batch evaluation completed: {successful}/{len(json_paths)} successful | "
             f"Overall accuracy: {overall_accuracy:.2f}% | "
             f"Report: {batch_report_file}"
@@ -796,7 +798,7 @@ YOUR JUDGMENT:"""
         """Clear the LLM judgment cache."""
         cache_size = len(self._judgment_cache)
         self._judgment_cache.clear()
-        self.logger.info(f"Cleared {cache_size} cached judgments")
+        self.logger.info_msg(f"Cleared {cache_size} cached judgments")
 
 
 # Convenience function for quick evaluations
