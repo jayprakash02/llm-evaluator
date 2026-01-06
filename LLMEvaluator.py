@@ -20,7 +20,7 @@ import hashlib
 # GroundX imports
 from groundx.extract.settings.settings import AgentSettings
 from groundx.extract.services.logger import Logger
-
+from groundx.extract.agents import AgentCode
 
 class Judgment(str, Enum):
     """Enumeration for field judgment results."""
@@ -391,8 +391,6 @@ YOUR JUDGMENT:"""
             Judgment enum (RIGHT or WRONG)
         """
         try:
-            from groundx.extract.agents import AgentCode
-            
             # Create agent with settings
             agent = AgentCode(
                 model_id=self.agent_settings.model_id,
