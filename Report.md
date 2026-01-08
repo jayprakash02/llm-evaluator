@@ -14,7 +14,7 @@ The system was designed with **batched LLM evaluation** to maximize context wind
 
 A **three-phase matching algorithm** (exact → normalized → case-insensitive) with CSV column discovery was developed to handle imperfect data schemas without preprocessing. This will reduce preprocessing requirements while maintaining match accuracy across varied input formats.
 
-An **extensible validation framework** with configurable exclusion sets and field mappings enabled domain adaptation through configuration changes rather than code modifications. This reduced deployment time for new domains from days to hours while allowing business users to configure without engineering support.
+An **extensible validation framework** with configurable exclusion sets and field mappings enabled domain adaptation through configuration changes rather than code modifications. 
 
 **Hash-based judgment caching** prevented redundant LLM calls for identical field pairs while maintaining evaluation reproducibility. Testing showed a 35% reduction in LLM API calls for typical datasets with repeated field patterns.
 
