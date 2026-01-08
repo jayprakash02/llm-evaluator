@@ -6,7 +6,7 @@ The system was designed with **batched LLM evaluation** to maximize context wind
 
 **Key-only normalization** through FIELD_MAPPINGS was implemented to solve schema misalignment between JSON and CSV formats. This approach preserved raw data integrity while ensuring accurate field matching without the overhead of full value normalization.
 
-**Stateful agent management** using a singleton AgentCode instance with retry logic maintained LLM session persistence across evaluations and handled hallucinations through structured response validation, reducing initialization overhead by 70%.
+**Stateful agent management** using a singleton AgentCode instance with retry logic maintained LLM session persistence across evaluations and handled hallucinations through structured response validation, reducing initialization overhead.
 
 **OpenTelemetry instrumentation** was integrated to provide comprehensive observability covering LLM inference latency, token usage, and error rates, delivering production-ready monitoring capabilities.
 
