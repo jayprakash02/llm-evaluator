@@ -16,7 +16,7 @@ A **three-phase matching algorithm** (exact → normalized → case-insensitive)
 
 An **extensible validation framework** with configurable exclusion sets and field mappings enabled domain adaptation through configuration changes rather than code modifications. 
 
-**Hash-based judgment caching** prevented redundant LLM calls for identical field pairs while maintaining evaluation reproducibility. Testing showed a 35% reduction in LLM API calls for typical datasets with repeated field patterns.
+**Hash-based judgment caching** prevented redundant LLM calls for identical field pairs while maintaining evaluation reproducibility. 
 
 ## Future Improvements 
 
