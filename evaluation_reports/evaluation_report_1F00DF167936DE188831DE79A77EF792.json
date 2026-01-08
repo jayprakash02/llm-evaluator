@@ -1,0 +1,55 @@
+{
+  "evaluation_id": "eval_20260106_211243_1F00DF16",
+  "json_file": "data/214f42ca-2349-4919-a11e-540b65f4ab85-extract.json",
+  "statement_id": "1F00DF167936DE188831DE79A77EF792",
+  "evaluation_timestamp": "2026-01-06T21:12:43.843374",
+  "processing_time_seconds": 0.001,
+  "summary": {
+    "total_fields_evaluated": 5,
+    "fields_right": 5,
+    "fields_wrong": 0,
+    "fields_skipped": 0,
+    "accuracy_percentage": 100.0
+  },
+  "field_details": {
+    "interval_end_date": {
+      "field_name": "interval_end_date",
+      "extracted_value": "2025-03-11",
+      "ground_truth_value": "2025-03-11",
+      "judgment": "RIGHT",
+      "notes": "Exact match (case-insensitive)"
+    },
+    "statement_date": {
+      "field_name": "statement_date",
+      "extracted_value": "2025-04-17",
+      "ground_truth_value": "2025-04-17",
+      "judgment": "RIGHT",
+      "notes": "Exact match (case-insensitive)"
+    },
+    "amount_due": {
+      "field_name": "amount_due",
+      "extracted_value": "76.2",
+      "ground_truth_value": "76.2",
+      "judgment": "RIGHT",
+      "notes": "Exact match (case-insensitive)"
+    },
+    "interval_start_date": {
+      "field_name": "interval_start_date",
+      "extracted_value": "2025-02-11",
+      "ground_truth_value": "2025-02-11",
+      "judgment": "RIGHT",
+      "notes": "Exact match (case-insensitive)"
+    },
+    "due_date": {
+      "field_name": "due_date",
+      "extracted_value": "2025-04-08",
+      "ground_truth_value": "2025-04-08",
+      "judgment": "RIGHT",
+      "notes": "Exact match (case-insensitive)"
+    }
+  },
+  "metadata": {
+    "evaluation_mode": "batched_single_call",
+    "fields_with_mismatches": []
+  }
+}
